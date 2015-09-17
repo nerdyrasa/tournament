@@ -3,57 +3,46 @@
 # tournament.py -- implementation of a Swiss-system tournament
 #
 
+from DB import DB
 import psycopg2
-
-
-def connect():
-    """Connect to the PostgreSQL database.  Returns a database connection."""
-    return psycopg2.connect("dbname=tournament")
 
 
 def deleteMatches():
     """Remove all the match records from the database."""
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("delete from matches")
-    conn.commit()
-    conn.close()
+    DB().execute("DELETE FROM matches", True)
 
 
 def deletePlayers():
     """Remove all the player records from the database."""
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("delete from players")
-    conn.commit()
-    conn.close()
+    DB().execute("DELETE FROM players", True)
 
 
 def countPlayers():
     """Returns the number of players currently registered."""
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("select count(*) from players")
-    row = cursor.fetchone()
-    number_of_players = row[0]
-    conn.close()
-    return number_of_players
+    conn = DB().execute("SELECT COUNT(*) FROM players")
+    cursor = conn['cursor'].fetchone()
+    conn['conn'].close()
+    return cursor[0]
 
 
 def registerPlayer(name):
     """Adds a player to the tournament database.
 
-    The database assigns a unique serial id number for the player.  (This
-    should be handled by your SQL database schema, not in your Python code.)
+    The database assigns a unique serial id number for the player.
+    The database assigns a unique serial id to a registration record
+    for the player playing in a specific tournament.
+    Currently, the tournament number is hard coded as 1.
+    TODO: The player should be able to select the tournament in the
+    front end when they register.
 
-    Args:
-      name: the player's full name (need not be unique).
+    :param str name: the player's full name (need not be unique).
     """
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("insert into players (player_name) values (%s)", (name,))
-    conn.commit()
-    conn.close()
+    conn = DB().insert("INSERT INTO players (name) VALUES (%s) RETURNING id",
+                       (name, ))
+    conn['conn'].commit()
+    pid = conn['cursor'].fetchone()[0]
+    conn = DB().insert("INSERT INTO registrations (p_id, t_id) VALUES (%s,%s)",
+                       (pid, 1), True)
 
 
 def playerStandings():
@@ -62,43 +51,42 @@ def playerStandings():
     The first entry in the list should be the player in first place, or a
     player tied for first place if there is currently a tie.
 
+    The database query uses database views to collect wins and total number of matches and
+    ensures that a player is listed only once.
+
     Returns:
-      A list of tuples, each of which contains (id, name, wins, matches):
+      A list of tuples, ordered by the number of wins, from most wins to least wins,
+      each of which contains (id, name, wins, matches):
         id: the player's unique id (assigned by the database)
         name: the player's full name (as registered)
         wins: the number of matches the player has won
         matches: the number of matches the player has played
     """
-    conn = connect()
-    cursor = conn.cursor()
-
-    query = "select wins.pid, wins.pname, wins.win_num, losses.loss_num"
-    query += " from wins"
-    query += " inner join losses"
-    query += " on wins.pid = losses.pid"
-    query += " order by wins.win_num desc"
-
-    cursor.execute(query)
-    rows = cursor.fetchall()
-    player_list = [(row[0], row[1], row[2], row[2]+row[3]) for row in rows]
-
-    conn.close()
-    return player_list
+    conn = DB().execute(
+        '''
+        SELECT player_wins.pid, player_wins.pname, player_wins.wins,
+         (player_wins.wins + player_losses.losses) AS matches
+         FROM player_wins INNER JOIN player_losses
+         ON player_wins.pid = player_losses.pid
+         ORDER BY player_wins.wins DESC''')
+    rows = conn["cursor"].fetchall()
+    conn['conn'].close()
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 
 def reportMatch(winner, loser):
-    """Records the outcome of a single match between two players.
+    """Records the outcome of a single match in a specific tournament between two players.
+    Currently the tournament number is hard-coded to 1, but in the future the front
+    end system will be able to report the tournament number along with the winner and
+    loser of a particular match
 
-    Args:
-      winner:  the id number of the player who won
-      loser:  the id number of the player who lost
+    :param integer winner:  the id number of the player who won
+    :param integer loser:  the id number of the player who lost
+
+    For now, the tournament number is hard coded as 1.
     """
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("insert into matches (match_winner, match_loser) values (%s, %s)",
-                   (winner, loser))
-    conn.commit()
-    conn.close()
+    DB().insert("INSERT INTO matches (t_id, winner, loser) VALUES (%s, %s, %s)",
+                (1, winner, loser), True)
 
 
 def swissPairings():
@@ -106,8 +94,7 @@ def swissPairings():
 
     Assuming that there are an even number of players registered, each player
     appears exactly once in the pairings.  Each player is paired with another
-    player with an equal or nearly-equal win record, that is, a player adjacent
-    to him or her in the standings.
+    player with an equal win record.
 
     Returns:
       A list of tuples, each of which contains (id1, name1, id2, name2)
@@ -116,12 +103,13 @@ def swissPairings():
         id2: the second player's unique id
         name2: the second player's name
     """
-
-    pairings = []
-    players = playerStandings()
-
-    for i in xrange(0, len(players), 2):
-        pair = (players[i][0], players[i][1], players[i+1][0], players[i+1][1])
-        pairings.append(pair)
-
-    return pairings
+    conn = DB().execute(
+        '''
+        SELECT a.pid, a.pname, b.pid, b.pname
+        FROM player_wins AS a JOIN player_wins AS b
+        ON a.wins = b.wins
+        WHERE a.pid > b.pid
+        ''')
+    rows = conn["cursor"].fetchall()
+    conn['conn'].close()
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
